@@ -151,20 +151,32 @@ Plain English instructions only. No bold, italic, or Markdown.
 
 # --- HANDLERS ---
 
-@bot.message_handler(commands=['start', 'dutch', 'spanish', 'german'])
-def set_language(message):
-    lang_map = {'dutch': 'Dutch', 'spanish': 'Spanish', 'german': 'German'}
-    lang = next((v for k, v in lang_map.items() if k in message.text.lower()), 'Dutch')
-    user_modes[message.chat.id] = lang
-    flag = LANG_CONFIG[lang]['flag']
-    bot.reply_to(message, f"{flag} Language set to {lang}.\nSend 'Learn: [sentence]' or an image to start!")
-
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    bot.reply_to(message, (
+        "👋 Welcome to the Language Tutor Bot!\n\n"
+        "Supports Dutch 🇳🇱, Spanish 🇪🇸, and German 🇩🇪 — language is detected automatically.\n\n"
+        "Commands:\n"
+        "Learn: [sentence] — analyze a sentence\n"
+        "Test — quiz yourself on past sentences\n"
+        "Or send an image with text to analyze it!"
+    ))
+ 
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("test"))
 def handle_test(message):
     chat_id = message.chat.id
-    lang = user_modes.get(chat_id, "Dutch")
-    response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, get_history(chat_id)))
+    # Detect language from history, or default to Dutch for the quiz
+    history = get_history(chat_id)
+    lang = detect_language_from_text(history[:200]) if history != "No history yet." else "Dutch"
+    response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, history))
     bot.reply_to(message, response.text)
+
+# @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("test"))
+# def handle_test(message):
+#     chat_id = message.chat.id
+#     lang = user_modes.get(chat_id, "Dutch")
+#     response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, get_history(chat_id)))
+#     bot.reply_to(message, response.text)
 
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_learning(message):

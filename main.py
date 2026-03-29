@@ -67,13 +67,14 @@ def detect_language_from_image(image_bytes):
 # --- PROMPT BUILDERS ---
 
 LANGUAGE_POINT_RULES = """
-[Number each point. Put a blank line between each point.
+[Number each point. Put a blank line between each point. Short and concise.
 Rules per word type:
-- Skip: standalone articles and obvious words with no notable grammar role.
-- Adjective: adjective(term in target language), meaning. One line on ending rule if relevant.
-- Noun: meaning. singular - plural.
-- Preposition with notable usage: meaning. Brief note on usage.
-- Fixed/reflexive/separable verb phrase: 2-3 sentences. Add one short simple example sentence.
+- Skip: the word, standalone articles and obvious words with no notable grammar role.
+- Adjective: the word, adjective(term in target language), meaning. One line on ending rule if relevant.
+- Noun: the word, meaning. singular - plural.
+- Preposition (only with notable usage): the word, meaning. Brief note on usage.
+- Verb:  the word, 2-3 sentences. Add one short simple example sentence.
+- Verb phrase (Fixed/reflexive/separable verb phrase): the word, 2-3 sentences. Add one short simple example sentence.
 ]
 """
 
@@ -139,6 +140,7 @@ Generate exactly:
    Next line: Answer: [word]
 
 2. One article challenge using a noun from the sentences.
+   [Choose from the following]
    Dutch:   ___ (de/het) [noun]
    Spanish: ___ (el/la) [noun]
    German:  ___ (der/die/das) [noun]

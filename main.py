@@ -1,4 +1,5 @@
 import os
+import traceback
 import telebot
 from dotenv import load_dotenv
 from google import genai
@@ -37,7 +38,17 @@ LANG_CONFIG = {
 
 SUPPORTED_LANGS = list(LANG_CONFIG.keys())
 
-# --- HISTORY ---
+# --- HELPERS ---
+
+def send_long_message(chat_id, text, reply_to=None):
+    """Split and send messages that exceed Telegram's 4096 char limit."""
+    MAX_LEN = 4096
+    chunks = [text[i:i+MAX_LEN] for i in range(0, len(text), MAX_LEN)]
+    for i, chunk in enumerate(chunks):
+        if i == 0 and reply_to:
+            bot.reply_to(reply_to, chunk)
+        else:
+            bot.send_message(chat_id, chunk)
 
 def save_to_history(chat_id, text):
     with open(f"history_{chat_id}.txt", "a", encoding="utf-8") as f:
@@ -159,11 +170,10 @@ def handle_start(message):
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("test"))
 def handle_test(message):
     chat_id = message.chat.id
-    # Detect language from history, or default to Dutch for the quiz
     history = get_history(chat_id)
     lang = detect_language_from_text(history[:200]) if history != "No history yet." else "Dutch"
     response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, history))
-    bot.reply_to(message, response.text)
+    send_long_message(chat_id, response.text, reply_to=message)
 
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_learning(message):
@@ -198,11 +208,12 @@ def handle_learning(message):
             content_list = [build_analysis_prompt(lang, flag, user_text)]
 
         response = client.models.generate_content(model=MODEL_NAME, contents=content_list)
-        bot.reply_to(message, response.text)
+        send_long_message(chat_id, response.text, reply_to=message)
 
     except Exception as e:
-        print(f"Error: {e}")
-        bot.reply_to(message, "Error processing the request. Check the logs.")
+        error_details = traceback.format_exc()
+        print(f"ERROR:\n{error_details}")
+        bot.reply_to(message, f"Error: {str(e)}")
 
 if __name__ == "__main__":
     print("Language Tutor Bot is Online...")

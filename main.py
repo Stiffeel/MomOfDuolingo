@@ -37,6 +37,8 @@ LANG_CONFIG = {
     },
 }
 
+SUPPORTED_LANGS = list(LANG_CONFIG.keys())
+
 # --- HISTORY ---
 
 def save_to_history(chat_id, text):
@@ -47,34 +49,20 @@ def get_history(chat_id):
     path = f"history_{chat_id}.txt"
     return open(path, encoding="utf-8").read() if os.path.exists(path) else "No history yet."
 
-# --- CONJUGATION BLOCK BUILDER ---
+# --- LANGUAGE DETECTION ---
 
-def conjugation_instruction(lang):
-    cfg = LANG_CONFIG[lang]
-    pronoun_lines = "\n".join(f"▪ {p}, ..." for p in cfg["pronouns"])
-    tense_examples = ", ".join(cfg["example_tenses"])
-    note = f"\n[{cfg['tense_note']}]" if cfg["tense_note"] else ""
+def detect_language_from_text(text):
+    prompt = f"Identify the language of this sentence. Reply with exactly one word: Dutch, Spanish, or German.\nSentence: {text}"
+    r = client.models.generate_content(model=MODEL_NAME, contents=prompt)
+    detected = r.text.strip().split()[0].capitalize()
+    return detected if detected in SUPPORTED_LANGS else None
 
-    return f"""
-🔀 Conjugation: [infinitive of the BASE verb only — not the full phrase]
-[If the verb is part of a separable or reflexive phrase, conjugate only the core verb.]
-[Example: for "zich inzetten voor", conjugate only "inzetten". For "jugar al golf", conjugate only "jugar".]{note}
-
-[Header line:]
-Pronoun, {cfg['tenses']}
-
-[Then one line per pronoun, starting with ▪:]
-{pronoun_lines}
-
-[After the table, write exactly 3 example sentences.]
-[Take the ORIGINAL sentence and simply change the tense — keep the same subject, object, and meaning.]
-[Do NOT invent a new sentence. Just rewrite the original in a different tense.]
-[Tenses to use: {tense_examples}.]
-[Format:]
-[Tense]:
-[{lang} sentence — original sentence rewritten in this tense]
-[English translation]
-"""
+def detect_language_from_image(image_bytes):
+    prompt = "What language is the text in this image? Reply with exactly one word: Dutch, Spanish, or German."
+    part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+    r = client.models.generate_content(model=MODEL_NAME, contents=[prompt, part])
+    detected = r.text.strip().split()[0].capitalize()
+    return detected if detected in SUPPORTED_LANGS else None
 
 # --- PROMPT BUILDERS ---
 
@@ -89,9 +77,39 @@ Rules per word type:
 ]
 """
 
-def build_learn_prompt(lang, flag, sentence):
+def conjugation_instruction(lang):
+    cfg = LANG_CONFIG[lang]
+    pronoun_lines = "\n".join(f"▪ {p}, ..." for p in cfg["pronouns"])
+    tense_examples = ", ".join(cfg["example_tenses"])
+    note = f"\n[{cfg['tense_note']}]" if cfg["tense_note"] else ""
+
     return f"""
-You are a {lang} language tutor. Analyze the sentence and reply in this exact format:
+🔀 Conjugation: [infinitive of the BASE verb only — not the full phrase]
+[If the verb is separable or reflexive, conjugate only the core verb. E.g. for "zich inzetten voor" use "inzetten"; for "jugar al golf" use "jugar".]{note}
+
+[Header line:]
+Pronoun, {cfg['tenses']}
+
+[One line per pronoun — use ONLY these exact pronouns in this exact order, each starting with ▪:]
+{pronoun_lines}
+
+[After the table, write exactly 3 example sentences.]
+[Rewrite the ORIGINAL sentence in a different tense. Keep the same subject, object, and meaning — only change the tense.]
+[Tenses to use: {tense_examples}.]
+[Tense]:
+[sentence in {lang}]
+[English translation]
+"""
+
+def build_analysis_prompt(lang, flag, sentence):
+    """Single prompt used for both text and image analysis."""
+    cfg = LANG_CONFIG[lang]
+    return f"""
+You are a {lang} language tutor. Analyze this {lang} sentence.
+
+The sentence is in {lang}. Analyze it as {lang}. Do NOT translate it to another language.
+
+Reply in this exact format:
 
 {flag} {sentence}
 
@@ -103,35 +121,12 @@ You are a {lang} language tutor. Analyze the sentence and reply in this exact fo
 {conjugation_instruction(lang)}
 
 STRICT RULES:
-- English only for all explanations.
+- The first line of your reply MUST be exactly: {flag} {sentence}
+- Analyze the sentence as {lang}. Do not convert it to Dutch or any other language.
+- All explanations in English.
 - No bold, italic, or Markdown (no *, **, _, __, |, backticks).
-- Conjugation: comma-separated plain text rows, not pipe tables.
-- Blank line between each language point.
-- Blank line between each section.
-"""
-
-def build_image_prompt(lang, flag):
-    return f"""
-You are a {lang} language tutor.
-
-Step 1: Extract the {lang} text from the image.
-Step 2: Analyze it in this exact format:
-
-{flag} [extracted sentence]
-
-🇬🇧 [English translation]
-
-📝 Language points:
-{LANGUAGE_POINT_RULES}
-
-{conjugation_instruction(lang)}
-
-STRICT RULES:
-- English only for all explanations.
-- No bold, italic, or Markdown (no *, **, _, __, |, backticks).
-- Conjugation: comma-separated plain text rows, not pipe tables.
-- Blank line between each language point.
-- Blank line between each section.
+- Conjugation rows: comma-separated, start each with ▪, use ONLY the {lang} pronouns: {", ".join(cfg["pronouns"])}
+- Blank line between each language point and between each section.
 """
 
 def build_test_prompt(lang, history):
@@ -172,8 +167,6 @@ def handle_test(message):
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_learning(message):
     chat_id = message.chat.id
-    lang = user_modes.get(chat_id, "Dutch")
-    flag = LANG_CONFIG[lang]["flag"]
     is_image = message.content_type == 'photo'
 
     try:
@@ -181,17 +174,36 @@ def handle_learning(message):
 
         if is_image:
             file_info = bot.get_file(message.photo[-1].file_id)
-            data = bot.download_file(file_info.file_path)
-            content_list = [
-                build_image_prompt(lang, flag),
-                genai_types.Part.from_bytes(data=data, mime_type="image/jpeg")
-            ]
+            image_bytes = bot.download_file(file_info.file_path)
+
+            # Step 1: detect language from image first
+            lang = detect_language_from_image(image_bytes)
+            if not lang:
+                lang = user_modes.get(chat_id, "Dutch")
+            flag = LANG_CONFIG[lang]["flag"]
+
+            # Step 2: extract text from image
+            extract_prompt = f"Extract the {lang} text from this image. Reply with only the extracted text, nothing else."
+            part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+            extract_response = client.models.generate_content(model=MODEL_NAME, contents=[extract_prompt, part])
+            extracted_text = extract_response.text.strip()
+
+            # Step 3: analyze with correct language config
+            content_list = [build_analysis_prompt(lang, flag, extracted_text)]
+
         else:
             if not message.text.lower().startswith("learn:"):
                 return
             user_text = message.text[6:].strip()
+
+            # Detect language from the sentence
+            lang = detect_language_from_text(user_text)
+            if not lang:
+                lang = user_modes.get(chat_id, "Dutch")
+            flag = LANG_CONFIG[lang]["flag"]
+
             save_to_history(chat_id, user_text)
-            content_list = [build_learn_prompt(lang, flag, user_text)]
+            content_list = [build_analysis_prompt(lang, flag, user_text)]
 
         response = client.models.generate_content(model=MODEL_NAME, contents=content_list)
         bot.reply_to(message, response.text)

@@ -9,8 +9,6 @@ bot = telebot.TeleBot(os.getenv("TELEGRAM_TOKEN"))
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = "models/gemini-2.5-flash"
 
-user_modes = {}
-
 # --- LANGUAGE CONFIG ---
 
 LANG_CONFIG = {
@@ -55,26 +53,26 @@ def detect_language_from_text(text):
     prompt = f"Identify the language of this sentence. Reply with exactly one word: Dutch, Spanish, or German.\nSentence: {text}"
     r = client.models.generate_content(model=MODEL_NAME, contents=prompt)
     detected = r.text.strip().split()[0].capitalize()
-    return detected if detected in SUPPORTED_LANGS else None
+    return detected if detected in SUPPORTED_LANGS else "Dutch"
 
 def detect_language_from_image(image_bytes):
     prompt = "What language is the text in this image? Reply with exactly one word: Dutch, Spanish, or German."
     part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
     r = client.models.generate_content(model=MODEL_NAME, contents=[prompt, part])
     detected = r.text.strip().split()[0].capitalize()
-    return detected if detected in SUPPORTED_LANGS else None
+    return detected if detected in SUPPORTED_LANGS else "Dutch"
 
 # --- PROMPT BUILDERS ---
 
 LANGUAGE_POINT_RULES = """
 [Number each point. Put a blank line between each point. Short and concise.
 Rules per word type:
-- Skip: the word, standalone articles and obvious words with no notable grammar role.
+- Skip: standalone articles and obvious words with no notable grammar role.
 - Adjective: the word, adjective(term in target language), meaning. One line on ending rule if relevant.
 - Noun: the word, meaning. singular - plural.
 - Preposition (only with notable usage): the word, meaning. Brief note on usage.
-- Verb:  the word, 2-3 sentences. Add one short simple example sentence.
-- Verb phrase (Fixed/reflexive/separable verb phrase): the word, 2-3 sentences. Add one short simple example sentence.
+- Verb: the word, 2-3 sentences. Add one short simple example sentence.
+- Verb phrase (fixed/reflexive/separable): the word, 2-3 sentences. Add one short simple example sentence.
 ]
 """
 
@@ -88,9 +86,7 @@ def conjugation_instruction(lang):
 🔀 Conjugation: [infinitive of the BASE verb only — not the full phrase]
 [If the verb is separable or reflexive, conjugate only the core verb. E.g. for "zich inzetten voor" use "inzetten"; for "jugar al golf" use "jugar".]{note}
 
-[Header line:]
 Pronoun, {cfg['tenses']}
-
 [One line per pronoun — use ONLY these exact pronouns in this exact order, each starting with ▪:]
 {pronoun_lines}
 
@@ -103,7 +99,6 @@ Pronoun, {cfg['tenses']}
 """
 
 def build_analysis_prompt(lang, flag, sentence):
-    """Single prompt used for both text and image analysis."""
     cfg = LANG_CONFIG[lang]
     return f"""
 You are a {lang} language tutor. Analyze this {lang} sentence.
@@ -123,7 +118,7 @@ Reply in this exact format:
 
 STRICT RULES:
 - The first line of your reply MUST be exactly: {flag} {sentence}
-- Analyze the sentence as {lang}. Do not convert it to Dutch or any other language.
+- Analyze the sentence as {lang}. Do not convert it to any other language.
 - All explanations in English.
 - No bold, italic, or Markdown (no *, **, _, __, |, backticks).
 - Conjugation rows: comma-separated, start each with ▪, use ONLY the {lang} pronouns: {", ".join(cfg["pronouns"])}
@@ -140,7 +135,6 @@ Generate exactly:
    Next line: Answer: [word]
 
 2. One article challenge using a noun from the sentences.
-   [Choose from the following]
    Dutch:   ___ (de/het) [noun]
    Spanish: ___ (el/la) [noun]
    German:  ___ (der/die/das) [noun]
@@ -161,7 +155,7 @@ def handle_start(message):
         "Test — quiz yourself on past sentences\n"
         "Or send an image with text to analyze it!"
     ))
- 
+
 @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("test"))
 def handle_test(message):
     chat_id = message.chat.id
@@ -170,13 +164,6 @@ def handle_test(message):
     lang = detect_language_from_text(history[:200]) if history != "No history yet." else "Dutch"
     response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, history))
     bot.reply_to(message, response.text)
-
-# @bot.message_handler(func=lambda m: m.text and m.text.lower().startswith("test"))
-# def handle_test(message):
-#     chat_id = message.chat.id
-#     lang = user_modes.get(chat_id, "Dutch")
-#     response = client.models.generate_content(model=MODEL_NAME, contents=build_test_prompt(lang, get_history(chat_id)))
-#     bot.reply_to(message, response.text)
 
 @bot.message_handler(content_types=['photo', 'text'])
 def handle_learning(message):
@@ -190,19 +177,13 @@ def handle_learning(message):
             file_info = bot.get_file(message.photo[-1].file_id)
             image_bytes = bot.download_file(file_info.file_path)
 
-            # Step 1: detect language from image first
             lang = detect_language_from_image(image_bytes)
-            if not lang:
-                lang = user_modes.get(chat_id, "Dutch")
             flag = LANG_CONFIG[lang]["flag"]
 
-            # Step 2: extract text from image
-            extract_prompt = f"Extract the {lang} text from this image. Reply with only the extracted text, nothing else."
             part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-            extract_response = client.models.generate_content(model=MODEL_NAME, contents=[extract_prompt, part])
-            extracted_text = extract_response.text.strip()
+            extract_prompt = f"Extract the {lang} text from this image. Reply with only the extracted text, nothing else."
+            extracted_text = client.models.generate_content(model=MODEL_NAME, contents=[extract_prompt, part]).text.strip()
 
-            # Step 3: analyze with correct language config
             content_list = [build_analysis_prompt(lang, flag, extracted_text)]
 
         else:
@@ -210,10 +191,7 @@ def handle_learning(message):
                 return
             user_text = message.text[6:].strip()
 
-            # Detect language from the sentence
             lang = detect_language_from_text(user_text)
-            if not lang:
-                lang = user_modes.get(chat_id, "Dutch")
             flag = LANG_CONFIG[lang]["flag"]
 
             save_to_history(chat_id, user_text)
@@ -224,7 +202,7 @@ def handle_learning(message):
 
     except Exception as e:
         print(f"Error: {e}")
-        bot.reply_to(message, "Error processing the request. Check the VS Code console.")
+        bot.reply_to(message, "Error processing the request. Check the logs.")
 
 if __name__ == "__main__":
     print("Language Tutor Bot is Online...")
